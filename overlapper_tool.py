@@ -4,9 +4,29 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
 from datetime import datetime
+from io import StringIO
 
 
 class PrimerCompatibilityAnalyzer:
+    # IUPAC ambiguity codes - maps each code to its possible bases
+    IUPAC_CODES = {
+        'A': {'A'},
+        'C': {'C'},
+        'G': {'G'},
+        'T': {'T'},
+        'R': {'A', 'G'},        # puRine
+        'Y': {'C', 'T'},        # pYrimidine
+        'S': {'G', 'C'},        # Strong
+        'W': {'A', 'T'},        # Weak
+        'K': {'G', 'T'},        # Keto
+        'M': {'A', 'C'},        # aMino
+        'B': {'C', 'G', 'T'},   # not A
+        'D': {'A', 'G', 'T'},   # not C
+        'H': {'A', 'C', 'T'},   # not G
+        'V': {'A', 'C', 'G'},   # not T
+        'N': {'A', 'C', 'G', 'T'},  # aNy
+    }
+
     def __init__(self, root):
         self.root = root
         self.root.title("qPCR Primer Compatibility Analyzer v2.0")
@@ -15,7 +35,6 @@ class PrimerCompatibilityAnalyzer:
 
         # Variables
         self.input_file_location = ""
-        self.output_file_name = ""
         self.sequences = []
         self.sort_reverse = {}  # Track sort direction for each column
 
@@ -85,21 +104,41 @@ class PrimerCompatibilityAnalyzer:
                                      foreground='#7f8c8d')
         self.input_label.grid(row=0, column=1, sticky='w')
 
-        # Output file selection
-        ttk.Label(file_frame, text="Output Directory (Optional):", style='Heading.TLabel').grid(
-            row=2, column=0, sticky='w', pady=(0, 5))
+        # Sequence input frame
+        seq_input_frame = ttk.LabelFrame(self.setup_tab, text="Sequence Input (FASTA Format)", padding=15)
+        seq_input_frame.pack(pady=10, padx=20, fill='both', expand=True)
 
-        output_frame = ttk.Frame(file_frame)
-        output_frame.grid(row=3, column=0, sticky='ew', pady=(0, 15))
-        output_frame.columnconfigure(1, weight=1)
+        # Instructions label
+        ttk.Label(seq_input_frame, text="Paste sequences in FASTA format or import from file above:",
+                  style='Heading.TLabel').pack(anchor='w', pady=(0, 5))
 
-        ttk.Button(output_frame, text="Browse...", command=self.select_output_directory,
-                   style='Action.TButton').grid(row=0, column=0, padx=(0, 10))
+        # Text input area with scrollbars
+        seq_text_frame = ttk.Frame(seq_input_frame)
+        seq_text_frame.pack(fill='both', expand=True)
 
-        self.output_file_var = tk.StringVar(value="No directory selected")
-        self.output_label = ttk.Label(output_frame, textvariable=self.output_file_var,
-                                      foreground='#7f8c8d')
-        self.output_label.grid(row=0, column=1, sticky='w')
+        self.sequence_text = tk.Text(seq_text_frame, wrap='none', font=('Courier', 10),
+                                     height=8, bg='#ffffff')
+
+        seq_scroll_y = ttk.Scrollbar(seq_text_frame, orient='vertical', command=self.sequence_text.yview)
+        seq_scroll_x = ttk.Scrollbar(seq_text_frame, orient='horizontal', command=self.sequence_text.xview)
+        self.sequence_text.configure(yscrollcommand=seq_scroll_y.set, xscrollcommand=seq_scroll_x.set)
+
+        self.sequence_text.pack(side='left', fill='both', expand=True)
+        seq_scroll_y.pack(side='right', fill='y')
+        seq_scroll_x.pack(side='bottom', fill='x')
+
+        # Add placeholder text
+        placeholder = """>Primer1
+ATCGATCGATCGATCG
+>Primer2
+GCTAGCTAGCTAGCTA"""
+        self.sequence_text.insert('1.0', placeholder)
+        self.sequence_text.configure(foreground='#999999')
+
+        # Bind events for placeholder behavior
+        self.sequence_text.bind('<FocusIn>', self.on_sequence_focus_in)
+        self.sequence_text.bind('<FocusOut>', self.on_sequence_focus_out)
+        self.placeholder_active = True
 
         # Analysis parameters frame
         params_frame = ttk.LabelFrame(self.setup_tab, text="Analysis Parameters", padding=15)
@@ -133,6 +172,15 @@ class PrimerCompatibilityAnalyzer:
         ttk.Spinbox(mismatch_frame, from_=0, to=5, width=5, textvariable=self.max_mismatches_var).grid(
             row=0, column=0, padx=(0, 10))
         ttk.Label(mismatch_frame, text="(0 = perfect matches only)").grid(row=0, column=1)
+
+        # Ambiguity settings
+        self.ambiguity_var = tk.BooleanVar(value=False)
+        ambiguity_check = ttk.Checkbutton(
+            params_frame,
+            text="Treat ambiguous bases (R, Y, S, W, K, M, B, D, H, V, N) as matches if any variation could match",
+            variable=self.ambiguity_var
+        )
+        ambiguity_check.grid(row=4, column=0, sticky='w', pady=(10, 0))
 
         # Action buttons frame
         action_frame = ttk.Frame(self.setup_tab)
@@ -238,8 +286,27 @@ class PrimerCompatibilityAnalyzer:
         ttk.Button(export_frame, text="Export Results", command=self.export_results,
                    style='Action.TButton').pack()
 
+    def on_sequence_focus_in(self, event):
+        """Clear placeholder text when user focuses on the text field"""
+        if self.placeholder_active:
+            self.sequence_text.delete('1.0', tk.END)
+            self.sequence_text.configure(foreground='#000000')
+            self.placeholder_active = False
+
+    def on_sequence_focus_out(self, event):
+        """Restore placeholder text if field is empty"""
+        content = self.sequence_text.get('1.0', tk.END).strip()
+        if not content:
+            placeholder = """>Primer1
+ATCGATCGATCGATCG
+>Primer2
+GCTAGCTAGCTAGCTA"""
+            self.sequence_text.insert('1.0', placeholder)
+            self.sequence_text.configure(foreground='#999999')
+            self.placeholder_active = True
+
     def select_input_file(self):
-        """Select input FASTA file"""
+        """Select input FASTA file and load contents into text field"""
         filename = filedialog.askopenfilename(
             title="Select FASTA file with primer sequences",
             filetypes=[("FASTA files", "*.fasta *.fa *.fas"), ("All files", "*.*")]
@@ -249,24 +316,52 @@ class PrimerCompatibilityAnalyzer:
             self.input_file_var.set(os.path.basename(filename))
             self.input_label.configure(foreground='#27ae60')
 
-    def select_output_directory(self):
-        """Select output directory"""
-        directory = filedialog.askdirectory(title="Select output directory")
-        if directory:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.output_file_name = os.path.join(directory, f"primer_analysis_{timestamp}")
-            self.output_file_var.set(directory)
-            self.output_label.configure(foreground='#27ae60')
+            # Load file contents into the text field
+            try:
+                with open(filename, 'r') as f:
+                    content = f.read()
+
+                # Clear placeholder and insert file contents
+                self.sequence_text.delete('1.0', tk.END)
+                self.sequence_text.insert('1.0', content)
+                self.sequence_text.configure(foreground='#000000')
+                self.placeholder_active = False
+
+                # Count sequences for feedback
+                sequences = list(SeqIO.parse(StringIO(content), "fasta"))
+                self.update_status(f"Loaded {len(sequences)} sequences from file", "success")
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error loading file: {str(e)}")
+                self.update_status("Error loading file", "error")
+
+    def get_sequences_from_text(self):
+        """Parse sequences from the text field"""
+        content = self.sequence_text.get('1.0', tk.END).strip()
+
+        if not content or self.placeholder_active:
+            return None
+
+        try:
+            sequences = list(SeqIO.parse(StringIO(content), "fasta"))
+            return sequences if sequences else None
+        except Exception:
+            return None
 
     def preview_sequences(self):
-        """Preview loaded sequences"""
-        if not self.input_file_location:
-            messagebox.showerror("Error", "Please select an input file first.")
+        """Preview sequences from the text field"""
+        sequences = self.get_sequences_from_text()
+
+        if not sequences:
+            messagebox.showerror("Error", "No valid FASTA sequences found in the text field.\n\n"
+                                "Please paste sequences in FASTA format:\n"
+                                ">SequenceName\n"
+                                "ATCGATCG...")
             return
 
         try:
-            self.sequences = list(SeqIO.parse(self.input_file_location, "fasta"))
-            preview_text = f"Loaded {len(self.sequences)} sequences:\n\n"
+            self.sequences = sequences
+            preview_text = f"Found {len(self.sequences)} sequences:\n\n"
 
             for i, seq in enumerate(self.sequences[:10]):  # Show first 10
                 preview_text += f"{seq.id}: {str(seq.seq)[:50]}{'...' if len(seq.seq) > 50 else ''}\n"
@@ -275,11 +370,11 @@ class PrimerCompatibilityAnalyzer:
                 preview_text += f"\n... and {len(self.sequences) - 10} more sequences"
 
             messagebox.showinfo("Sequence Preview", preview_text)
-            self.update_status(f"Loaded {len(self.sequences)} sequences", "success")
+            self.update_status(f"Found {len(self.sequences)} sequences", "success")
 
         except Exception as e:
-            messagebox.showerror("Error", f"Error loading sequences: {str(e)}")
-            self.update_status("Error loading sequences", "error")
+            messagebox.showerror("Error", f"Error parsing sequences: {str(e)}")
+            self.update_status("Error parsing sequences", "error")
 
     def update_status(self, message, status_type="info"):
         """Update status message"""
@@ -292,9 +387,26 @@ class PrimerCompatibilityAnalyzer:
             self.status_label.configure(style='TLabel')
         self.root.update()
 
-    def count_mismatches(self, seq1, seq2):
-        """Count mismatches between two sequences of equal length"""
-        return sum(1 for a, b in zip(seq1, seq2) if a != b)
+    def bases_could_match(self, base1, base2):
+        """Check if two bases could match considering IUPAC ambiguity codes.
+
+        Returns True if any possible base from base1 matches any possible base from base2.
+        """
+        bases1 = self.IUPAC_CODES.get(base1.upper(), {base1.upper()})
+        bases2 = self.IUPAC_CODES.get(base2.upper(), {base2.upper()})
+        # Check if there's any overlap between the possible bases
+        return bool(bases1 & bases2)
+
+    def count_mismatches(self, seq1, seq2, consider_ambiguity=False):
+        """Count mismatches between two sequences of equal length.
+
+        If consider_ambiguity is True, ambiguous bases that could potentially match
+        are counted as matches (not mismatches).
+        """
+        if consider_ambiguity:
+            return sum(1 for a, b in zip(seq1, seq2) if not self.bases_could_match(a, b))
+        else:
+            return sum(1 for a, b in zip(seq1, seq2) if a != b)
 
     def get_risk_level(self, overlap_length, mismatches):
         """Determine risk level based on overlap length and mismatches"""
@@ -319,7 +431,7 @@ class PrimerCompatibilityAnalyzer:
         trimmed = seq_record.seq[-n:].upper()
         return str(trimmed.reverse_complement())
 
-    def visualize_overlap(self, seq1, seq2, overlap_length, mismatch_positions=None):
+    def visualize_overlap(self, seq1, seq2, overlap_length, consider_ambiguity=False):
         """Create ASCII visualization of overlap - original format with both full primers"""
         primer1_full = str(seq1.seq)
         primer2_full = str(seq2.seq)
@@ -338,10 +450,18 @@ class PrimerCompatibilityAnalyzer:
         # Create match/mismatch line with proper offset
         match_line = " " * p2_offset
         for i, (a, b) in enumerate(zip(primer1_3end, primer2_3end_rc)):
-            if a == b:
-                match_line += "|"
+            if consider_ambiguity:
+                # Use ambiguity-aware matching
+                if self.bases_could_match(a, b):
+                    match_line += "|"
+                else:
+                    match_line += " "  # Space for mismatch
             else:
-                match_line += " "  # Space for mismatch
+                # Exact matching only
+                if a == b:
+                    match_line += "|"
+                else:
+                    match_line += " "  # Space for mismatch
 
         lines.append(match_line)
 
@@ -354,18 +474,19 @@ class PrimerCompatibilityAnalyzer:
 
     def run_analysis(self):
         """Run the complete primer compatibility analysis"""
-        if not self.input_file_location:
-            messagebox.showerror("Error", "Please select an input file first.")
-            return
+        # Get sequences from text field
+        sequences = self.get_sequences_from_text()
 
-        # Output file is now optional
-        if not self.output_file_name:
-            self.update_status("No output directory specified - results will not be saved to file", "info")
+        if not sequences:
+            messagebox.showerror("Error", "No valid FASTA sequences found in the text field.\n\n"
+                                "Please paste sequences in FASTA format or import from a file.")
+            return
 
         # Validate parameters
         min_overlap = self.min_overlap_var.get()
         max_overlap = self.max_overlap_var.get()
         max_mismatches = self.max_mismatches_var.get()
+        consider_ambiguity = self.ambiguity_var.get()
 
         if min_overlap >= max_overlap:
             messagebox.showerror("Error", "Minimum overlap must be less than maximum overlap.")
@@ -375,8 +496,8 @@ class PrimerCompatibilityAnalyzer:
         self.update_status("Running analysis...", "info")
 
         try:
-            # Load sequences
-            self.sequences = list(SeqIO.parse(self.input_file_location, "fasta"))
+            # Use sequences from text field
+            self.sequences = sequences
 
             # Clear previous results
             for item in self.results_tree.get_children():
@@ -404,7 +525,7 @@ class PrimerCompatibilityAnalyzer:
                             primer2_3end_rc = self.get_last_n_bases_rc(self.sequences[j], overlap_length)
 
                             # Count mismatches
-                            actual_mismatches = self.count_mismatches(primer1_3end, primer2_3end_rc)
+                            actual_mismatches = self.count_mismatches(primer1_3end, primer2_3end_rc, consider_ambiguity)
 
                             if actual_mismatches == mismatches:
                                 # Don't skip self-comparisons - we want to detect self-dimers!
@@ -425,7 +546,7 @@ class PrimerCompatibilityAnalyzer:
                                     'primer2': self.sequences[j],
                                     'risk_level': risk_level,
                                     'visualization': self.visualize_overlap(
-                                        self.sequences[i], self.sequences[j], overlap_length
+                                        self.sequences[i], self.sequences[j], overlap_length, consider_ambiguity
                                     )
                                 }
 
@@ -441,13 +562,11 @@ class PrimerCompatibilityAnalyzer:
             summary += f"Total overlaps found: {total_overlaps}\n"
             summary += f"High-risk overlaps: {high_risk_count}\n"
             summary += f"Sequences analyzed: {len(self.sequences)}\n"
+            if consider_ambiguity:
+                summary += f"Ambiguity handling: ENABLED (ambiguous bases counted as matches if any variation matches)\n"
             summary += f"Risk Levels: HIGH (≥4 perfect matches), MEDIUM (2-3 perfect or ≥4 with 1 mismatch), LOW (other)"
 
             self.update_text_widget(self.summary_text, summary)
-
-            # Export to file if output path specified
-            if self.output_file_name:
-                self.export_to_file()
 
             self.update_status(f"Analysis complete. Found {total_overlaps} potential overlaps.", "success")
 
@@ -548,44 +667,6 @@ class PrimerCompatibilityAnalyzer:
             self.results_tree.heading(column, text=column)
 
         self.update_status("Results cleared", "info")
-
-    def export_to_file(self):
-        """Export results to text file"""
-        if not self.output_file_name:
-            return
-
-        try:
-            with open(f"{self.output_file_name}.txt", "w") as f:
-                f.write("qPCR Primer Compatibility Analysis Report\n")
-                f.write("=" * 50 + "\n")
-                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Input file: {os.path.basename(self.input_file_location)}\n")
-                f.write(f"Total sequences: {len(self.sequences)}\n")
-                f.write(f"Total overlaps found: {len(self.analysis_results)}\n\n")
-
-                # Group by overlap length and mismatches
-                current_overlap = None
-                current_mismatches = None
-
-                for result in sorted(self.analysis_results,
-                                     key=lambda x: (x['overlap_length'], x['mismatches']),
-                                     reverse=True):
-
-                    if (result['overlap_length'] != current_overlap or
-                            result['mismatches'] != current_mismatches):
-                        current_overlap = result['overlap_length']
-                        current_mismatches = result['mismatches']
-
-                        f.write(f"\n{'-' * 60}\n")
-                        f.write(f"{current_overlap}-base overlaps with {current_mismatches} mismatch(es)\n")
-                        f.write(f"{'-' * 60}\n\n")
-
-                    f.write(f"Overlap: {result['primer1'].id} vs {result['primer2'].id}\n")
-                    f.write(f"Risk Level: {result['risk_level']}\n")
-                    f.write(f"{result['visualization']}\n")
-
-        except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export results: {str(e)}")
 
     def export_results(self):
         """Export results to CSV file"""
