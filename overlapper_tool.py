@@ -318,8 +318,10 @@ GCTAGCTAGCTAGCTA"""
 
             # Load file contents into the text field
             try:
-                with open(filename, 'r') as f:
+                with open(filename, 'r', encoding='utf-8-sig') as f:
                     content = f.read()
+                # Replace non-breaking spaces (common in files from PDFs/Word)
+                content = content.replace('\xa0', ' ')
 
                 # Clear placeholder and insert file contents
                 self.sequence_text.delete('1.0', tk.END)
@@ -338,6 +340,8 @@ GCTAGCTAGCTAGCTA"""
     def get_sequences_from_text(self):
         """Parse sequences from the text field"""
         content = self.sequence_text.get('1.0', tk.END).strip()
+        # Replace non-breaking spaces (common when pasting from PDFs/Word/web)
+        content = content.replace('\xa0', ' ')
 
         if not content or self.placeholder_active:
             return None
